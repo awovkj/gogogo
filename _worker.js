@@ -1178,6 +1178,19 @@ async function fetchHandler(request, env) {
   if (shouldBlockUA(request.headers.get('User-Agent'))) return new Response('Not Found', { status: 404 });
   const config = await buildRuntimeConfig(request, env);
 
+   if (url.pathname === '/' && url.searchParams.get('sub')) {
+    const subValue = url.searchParams.get('sub') || '';
+    const proxyValue = url.searchParams.get('proxyip') || '';
+    const uuidValue = url.searchParams.get('uuid') || config.uuid;
+    const pathValue = buildProxyPath(proxyValue || config.proxyIP, subValue, uuidValue);
+    const routed = new URL(url.toString());
+    routed.pathname = '/sub';
+    routed.searchParams.set('uuid', uuidValue);
+    if (proxyValue) routed.searchParams.set('proxyip', proxyValue);
+    routed.searchParams.set('path', pathValue);
+    return handleSubRoute(new Request(routed.toString(), request), env, config);
+  }
+
   if (config.subPassword && url.pathname === `/${config.subPassword}`) {
     return handleQuickSubscription(request, env, config);
   }
