@@ -3,7 +3,6 @@ import { connect as rawConnect } from 'cloudflare:sockets';
 const connect = (options) => rawConnect(options);
 
 const UUID = '26bca0a8-d45f-495a-ab10-3a4556b5c1af';
-const SUB_PASSWORD = '123456';
 const SUB_TOKEN = '';
 const DEFAULT_PROXY_IP = 'pr.510517.xyz:50001';
 const DEFAULT_SUB_DOMAIN = 'sub.cmliussss.net';
@@ -947,7 +946,6 @@ async function buildRuntimeConfig(request, env) {
   }).filter(Boolean);
   const dls = envValue(env, 'DLS', DLS);
   const ps = envValue(env, 'PS', DEFAULT_PS);
-  const subPassword = envValue(env, 'SUB_PASSWORD', SUB_PASSWORD);
   const subToken = envValue(env, 'SUB_TOKEN', SUB_TOKEN);
   ECH = envValue(env, 'ECH_ENABLED', ECH ? 'true' : 'false') === 'true';
   ECH_SNI = envValue(env, 'ECH_SNI', ECH_SNI);
@@ -961,7 +959,6 @@ async function buildRuntimeConfig(request, env) {
     converters: converters.length ? converters : [DEFAULT_CONVERTER],
     dls,
     ps,
-    subPassword,
     subToken,
     clashConfig: envValue(env, 'CLASH_CONFIG', CLASH_CONFIG),
     singboxV11: envValue(env, 'SINGBOX_CONFIG_V11', SINGBOX_CONFIG_V11),
@@ -980,102 +977,15 @@ async function buildDesireBase(config, allIPs, overrideProxyIp, sourceSub, runti
   return (typeof node === 'string' ? node : String(node).split('\n')[0]).split('\n')[0];
 }
 
-async function handleQuickSubscription(request, env, config) {
-  const url = new URL(request.url);
-  const userAgent = (request.headers.get('User-Agent') || '').toLowerCase();
-  const details = getProxyPathDetails(url, config.proxyIP, config.uuid);
-  const requestProxyIp = details.proxyIP || config.proxyIP;
-  const pathParam = buildProxyPath(requestProxyIp, details.sourceSub, details.uuid);
-
-  if (userAgent.includes('sing-box') || userAgent.includes('singbox') || userAgent.includes('clash') || userAgent.includes('meta') || userAgent.includes('loon') || userAgent.includes('surge')) {
-    const type = userAgent.includes('clash') || userAgent.includes('meta') ? 'clash' : 'singbox';
-    const configList = type === 'clash' ? [config.clashConfig] : Array.from(new Set([config.singboxV11, config.singboxV12].filter(Boolean)));
-    let lastRes = null;
-    for (const converterUrl of config.converters) {
-      const targetSubDomain = details.sourceSub || config.subDomains[0] || config.host;
-      let subUrl;
-      if (config.subToken) {
-        const desireIPs = await getCustomIPs(env, config.dls);
-        const desireBase = await buildDesireBase(config, desireIPs, requestProxyIp, details.sourceSub, details.uuid);
-        subUrl = `https://${targetSubDomain}/sub?base=${encodeURIComponent(desireBase)}&token=${encodeURIComponent(config.subToken)}`;
-      } else {
-        subUrl = `https://${targetSubDomain}/sub?uuid=${details.uuid}&encryption=none&security=tls&sni=${config.host}&alpn=h3&fp=${FP}&allowInsecure=0&type=ws&host=${config.host}&path=${encodeURIComponent(pathParam)}` + (ECH ? `&ech=${encodeURIComponent((ECH_SNI ? `${ECH_SNI}+` : '') + ECH_DNS)}` : '');
-      }
-      for (const converterConfig of configList) {
-        const subApi = `${converterUrl}/sub?target=${type}&url=${encodeURIComponent(subUrl)}&config=${encodeURIComponent(converterConfig)}&emoji=true&list=false&sort=false&fdn=false&scv=false`;
-        try {
-          const res = await fetch(subApi, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-          if (res.ok) {
-            lastRes = res;
-            break;
-          }
-        } catch (_error) {
-          void _error;
-        }
-      }
-      if (lastRes) break;
-    }
-    if (lastRes) {
-      let body = await lastRes.text();
-      if (ECH) body = type === 'singbox' ? await pSB(body) : pCL(body, details.uuid);
-      return new Response(body, { status: 200, headers: lastRes.headers });
-    }
-  }
-
-  try {
-    for (const subDomain of details.sourceSub ? [details.sourceSub, ...config.subDomains.filter((item) => item !== details.sourceSub)] : config.subDomains) {
-      if (config.host.toLowerCase() === subDomain.toLowerCase()) continue;
-      let subUrl;
-      if (config.subToken) {
-        const desireIPs = await getCustomIPs(env, config.dls);
-        const desireBase = await buildDesireBase(config, desireIPs, requestProxyIp, details.sourceSub, details.uuid);
-        subUrl = `https://${subDomain}/sub?base=${encodeURIComponent(desireBase)}&token=${encodeURIComponent(config.subToken)}`;
-      } else {
-        subUrl = `https://${subDomain}/sub?uuid=${details.uuid}&encryption=none&security=tls&sni=${config.host}&alpn=h3&fp=${FP}&allowInsecure=0&type=ws&host=${config.host}&path=${encodeURIComponent(pathParam)}` + (ECH ? `&ech=${encodeURIComponent((ECH_SNI ? `${ECH_SNI}+` : '') + ECH_DNS)}` : '');
-      }
-      try {
-        const res = await fetch(subUrl, { headers: { 'User-Agent': request.headers.get('User-Agent') || '' } });
-        if (!res.ok) continue;
-        let body = await res.text();
-        try {
-          const decoded = atob(body);
-          const lines = decoded.split('\n').map((line) => {
-            let current = line.trim();
-            if (!current || !current.includes('://')) return current;
-            if (ECH && !current.includes('&ech=')) {
-              const echValue = encodeURIComponent((ECH_SNI ? `${ECH_SNI}+` : '') + ECH_DNS);
-              const hashIndex = current.indexOf('#');
-              current = hashIndex > 0 ? `${current.slice(0, hashIndex)}&ech=${echValue}${current.slice(hashIndex)}` : `${current}&ech=${echValue}`;
-            }
-            if (ECH && current.includes('fp=')) current = current.replace(/fp=[^&#]+/, `fp=${FP}`);
-            if (config.ps) current = current.includes('#') ? `${current}${encodeURIComponent(` ${config.ps}`)}` : `${current}#${encodeURIComponent(config.ps)}`;
-            return current;
-          });
-          body = btoa(lines.join('\n'));
-        } catch (_error) {
-          body = body;
-        }
-        return new Response(body, { status: 200, headers: res.headers });
-      } catch (_error) {
-        void _error;
-      }
-    }
-  } catch (_error) {
-    void _error;
-  }
-
-  const allIPs = await getCustomIPs(env, config.dls);
-  const listText = genNodes(config.host, details.uuid, requestProxyIp, allIPs, config.ps, details.sourceSub);
-  return new Response(encodeBase64Utf8(listText), {
-    status: 200,
-    headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' },
-  });
-}
-
 async function handleSubRoute(request, env, config) {
   const url = new URL(request.url);
   const baseLink = url.searchParams.get('base');
   const details = getProxyPathDetails(url, config.proxyIP, config.uuid);
+  const requestUUID = url.searchParams.get('uuid');
+
+  if (!requestUUID || requestUUID.toLowerCase() !== config.uuid.toLowerCase()) {
+    return new Response(null, { status: 404 });
+  }
 
   if (baseLink) {
     const reqToken = url.searchParams.get('token');
@@ -1139,10 +1049,6 @@ async function handleSubRoute(request, env, config) {
     return new Response(encodeBase64Utf8(output), { headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
   }
 
-  const requestUUID = url.searchParams.get('uuid');
-  if (!requestUUID || requestUUID.toLowerCase() !== config.uuid.toLowerCase()) {
-    return new Response('Invalid UUID', { status: 403 });
-  }
   let proxyIp = url.searchParams.get('proxyip') || details.proxyIP || config.proxyIP;
   const pathParam = url.searchParams.get('path');
   const pathProxyIp = extractPathProxyIp(pathParam || '');
@@ -1178,10 +1084,13 @@ async function fetchHandler(request, env) {
   if (shouldBlockUA(request.headers.get('User-Agent'))) return new Response('Not Found', { status: 404 });
   const config = await buildRuntimeConfig(request, env);
 
-   if (url.pathname === '/' && url.searchParams.get('sub')) {
+  if (url.pathname === '/' && url.searchParams.get('sub')) {
     const subValue = url.searchParams.get('sub') || '';
     const proxyValue = url.searchParams.get('proxyip') || '';
-    const uuidValue = url.searchParams.get('uuid') || config.uuid;
+    const uuidValue = url.searchParams.get('uuid') || '';
+    if (!uuidValue || uuidValue.toLowerCase() !== config.uuid.toLowerCase()) {
+      return new Response(null, { status: 404 });
+    }
     const pathValue = buildProxyPath(proxyValue || config.proxyIP, subValue, uuidValue);
     const routed = new URL(url.toString());
     routed.pathname = '/sub';
@@ -1189,10 +1098,6 @@ async function fetchHandler(request, env) {
     if (proxyValue) routed.searchParams.set('proxyip', proxyValue);
     routed.searchParams.set('path', pathValue);
     return handleSubRoute(new Request(routed.toString(), request), env, config);
-  }
-
-  if (config.subPassword && url.pathname === `/${config.subPassword}`) {
-    return handleQuickSubscription(request, env, config);
   }
 
   if (url.pathname === '/sub') {
