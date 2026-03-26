@@ -1,0 +1,14 @@
+name = "gogogo-proxy"
+main = "_worker.js"
+compatibility_date = "2026-03-26"
+
+[observability]
+enabled = true
+
+[[durable_objects.bindings]]
+name = "PROXY_SESSIONS"
+class_name = "ProxySessionDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ProxySessionDO"]
